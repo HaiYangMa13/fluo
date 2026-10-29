@@ -4,7 +4,7 @@ import { WeiboHistoryManager } from '../service/WeiboHistoryManager';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { curves, window } from '@kit.ArkUI';
-import { WeiboComment, WeiboCommentSort, WeiboDetailTab, WeiboLikeUser, WeiboLikesPage, WeiboPost, WeiboRepostsPage, WeiboUser } from '../model/WeiboModel';
+import { WeiboComment, WeiboCommentsPage, WeiboCommentSort, WeiboReplyContinuation, WeiboDetailTab, WeiboLikeUser, WeiboLikesPage, WeiboPost, WeiboRepostsPage, WeiboUser } from '../model/WeiboModel';
 import { WeiboAuthManager } from '../service/WeiboAuthManager';
 import { WeiboService, sanitizeHttpsUrl } from '../service/WeiboService';
 import { Breakpoint, ImmBlur, ImmMaterial, MaterialManager, Radius, Spacing, Theme, fs, isDarkMode, isLargeScreenForm, isPuraXMaxDevice, isWideFormDevice as detectWideFormDevice } from '../common/Theme';
@@ -111,6 +111,7 @@ export struct WeiboPostDetail {
   @State expandedReplyIds: string[] = [];
   @State replyLoadingIds: string[] = [];
   private replyCursors: Map<string, string> = new Map();
+  private replyContinuations: Map<string, WeiboReplyContinuation> = new Map();
   private replyEpochs: Map<string, number> = new Map();
   @State errorMessage: string = '';
   @State longTextLoading: boolean = false;
@@ -354,6 +355,7 @@ export struct WeiboPostDetail {
     this.commentLikeMutations.clear();
     this.replyLoadingIds = [];
     this.replyCursors.clear();
+    this.replyContinuations.clear();
     this.replyEpochs.clear();
     this.commentsNoProgressPages = 0;
     if (!WeiboAuthManager.getInstance().isSessionChanging()) {
@@ -665,6 +667,7 @@ export struct WeiboPostDetail {
     this.expandedReplyIds = [];
     this.replyLoadingIds = [];
     this.replyCursors.clear();
+    this.replyContinuations.clear();
     Haptic.light();
     this.loadComments(true);
   }
@@ -691,6 +694,7 @@ export struct WeiboPostDetail {
       this.expandedReplyIds = [];
       this.replyLoadingIds = [];
       this.replyCursors.clear();
+      this.replyContinuations.clear();
     } catch (error) {
       if (!this.isCurrentCommentRequest(epoch, revision)) { return; }
       this.commentsError = (error as Error).message ?? '评论加载失败，请重试';
@@ -706,19 +710,33 @@ export struct WeiboPostDetail {
     const revision: number = WeiboAuthManager.getInstance().getSessionRevision();
     const sort: WeiboCommentSort = this.commentsSort;
     const readLikeVersion: number = this.commentLikeVersion;
-    const nextPage: number = this.commentsPage + 1;
     this.loadingMoreComments = true;
+    const visited: Set<string> = new Set();
     try {
-      const page = await WeiboService.getInstance().fetchComments(this.postId, nextPage, sort, this.commentsNextMaxId);
-      if (!this.isCurrentCommentRequest(epoch, revision)) { return; }
-      this.applyConcurrentCommentLikes(page.items, readLikeVersion);
-      const added: WeiboComment[] = page.items.filter((item: WeiboComment): boolean =>
-        !this.comments.some((existing: WeiboComment): boolean => existing.id === item.id));
-      this.comments = this.comments.concat(added);
-      this.commentsPage = nextPage;
-      this.commentsNextMaxId = page.nextMaxId;
-      this.hasMoreComments = page.hasMore;
-      this.commentsNoProgressPages = added.length === 0 ? this.commentsNoProgressPages + 1 : 0;
+      // A manual tap may skip up to three filtered/duplicate pages, never an unbounded loop.
+      for (let attempt: number = 0; attempt < (automatic ? 1 : 3); attempt++) {
+        const cursor: string = this.commentsNextMaxId;
+        visited.add(cursor);
+        const nextPage: number = this.commentsPage + 1;
+        const page: WeiboCommentsPage = await WeiboService.getInstance().fetchComments(this.postId, nextPage, sort, cursor);
+        if (!this.isCurrentCommentRequest(epoch, revision)) { return; }
+        if (page.nextMaxId !== '0' && visited.has(page.nextMaxId)) {
+          throw new Error('评论分页游标未推进，请重试');
+        }
+        this.applyConcurrentCommentLikes(page.items, readLikeVersion);
+        const seen: Set<string> = new Set(this.comments.map((item: WeiboComment): string => item.id));
+        const added: WeiboComment[] = [];
+        for (const item of page.items) {
+          if (!seen.has(item.id)) { seen.add(item.id); added.push(item); }
+        }
+        this.comments = this.comments.concat(added);
+        this.commentsPage = nextPage;
+        this.commentsNextMaxId = page.nextMaxId;
+        this.hasMoreComments = page.hasMore;
+        this.commentsNoProgressPages = added.length === 0 ? this.commentsNoProgressPages + 1 : 0;
+        if (added.length > 0 || !page.hasMore) { return; }
+      }
+      if (!automatic) { this.getUIContext().getPromptAction().showToast({ message: $r('app.string.weibo_comments_no_progress') }); }
     } catch (error) {
       if (!this.isCurrentCommentRequest(epoch, revision)) { return; }
       this.getUIContext().getPromptAction().showToast({ message: (error as Error).message ?? '评论加载失败，请重试' });
@@ -862,6 +880,7 @@ export struct WeiboPostDetail {
     this.expandedReplyIds = this.expandedReplyIds.filter((id: string): boolean => id !== commentId);
     this.replyLoadingIds = this.replyLoadingIds.filter((id: string): boolean => id !== commentId);
     this.replyCursors.delete(commentId);
+    this.replyContinuations.delete(commentId);
     this.comments = this.comments.slice();
   }
 
@@ -882,7 +901,7 @@ export struct WeiboPostDetail {
     if (this.replyLoadingIds.includes(comment.id)) {
       return;
     }
-    const cursor: string | undefined = this.replyCursors.get(comment.id);
+    let cursor: string | undefined = this.replyCursors.get(comment.id);
     if (cursor === '0') {
       return;
     }
@@ -893,25 +912,43 @@ export struct WeiboPostDetail {
     this.replyEpochs.set(comment.id, threadEpoch);
     this.replyLoadingIds = this.replyLoadingIds.concat([comment.id]);
     this.comments = this.comments.slice();
-    hilog.info(0x0001, 'FluoReplies', 'request id=%{public}s cursor=%{public}s', comment.id, cursor ?? '0');
+    const visited: Set<string> = new Set();
     try {
-      const page = await WeiboService.getInstance().fetchCommentReplies(comment.id, cursor ?? '0');
-      if (!this.isCurrentReplyRequest(epoch, revision, comment.id, threadEpoch)) { return; }
-      this.applyConcurrentCommentLikes(page.items, readLikeVersion);
-      const previous: WeiboComment[] = cursor === undefined ? [] : (comment.replies ?? []);
-      const added: WeiboComment[] = page.items.filter((item: WeiboComment): boolean =>
-        !previous.some((existing: WeiboComment): boolean => existing.id === item.id));
-      if (cursor !== undefined && page.items.length > 0 && added.length === 0 && page.nextMaxId === cursor) {
-        throw new Error('接口返回重复回复，未取得下一页，请重试');
+      for (let attempt: number = 0; attempt < 3; attempt++) {
+        const continuation: WeiboReplyContinuation | undefined = this.replyContinuations.get(comment.id);
+        const source: string = continuation?.source ?? 'mobile';
+        const cursorKey: string = `${source}:${continuation?.maxIdType ?? '0'}:${cursor ?? '0'}`;
+        visited.add(cursorKey);
+        hilog.info(0x0001, 'FluoReplies', 'request id=%{public}s cursor=%{public}s source=%{public}s',
+          comment.id, cursor ?? '0', source);
+        const page: WeiboCommentsPage = await WeiboService.getInstance().fetchCommentReplies(comment.id,
+          cursor ?? '0', continuation, this.postId);
+        if (!this.isCurrentReplyRequest(epoch, revision, comment.id, threadEpoch)) { return; }
+        const next: WeiboReplyContinuation | undefined = page.replyContinuation ?? continuation;
+        const nextKey: string = `${next?.source ?? 'mobile'}:${next?.maxIdType ?? '0'}:${page.nextMaxId}`;
+        if (page.nextMaxId !== '0' && visited.has(nextKey)) {
+          throw new Error('接口返回重复回复，分页游标未推进，请重试');
+        }
+        this.applyConcurrentCommentLikes(page.items, readLikeVersion);
+        const previous: WeiboComment[] = cursor === undefined ? [] : (comment.replies ?? []);
+        const seen: Set<string> = new Set(previous.map((item: WeiboComment): string => item.id));
+        const added: WeiboComment[] = [];
+        for (const item of page.items) {
+          if (!seen.has(item.id)) { seen.add(item.id); added.push(item); }
+        }
+        comment.replies = previous.concat(added);
+        if (next !== undefined) { this.replyContinuations.set(comment.id, next); }
+        this.replyCursors.set(comment.id, page.hasMore ? page.nextMaxId : '0');
+        if (!this.expandedReplyIds.includes(comment.id)) {
+          this.expandedReplyIds = this.expandedReplyIds.concat([comment.id]);
+        }
+        this.comments = this.comments.slice();
+        hilog.info(0x0001, 'FluoReplies', 'result id=%{public}s received=%{public}d added=%{public}d more=%{public}s',
+          comment.id, page.items.length, added.length, `${page.hasMore}`);
+        if (added.length > 0 || !page.hasMore) { return; }
+        cursor = page.nextMaxId;
       }
-      comment.replies = previous.concat(added);
-      hilog.info(0x0001, 'FluoReplies', 'result id=%{public}s received=%{public}d added=%{public}d total=%{public}d more=%{public}s',
-        comment.id, page.items.length, added.length, comment.replies.length, `${page.hasMore}`);
-      this.replyCursors.set(comment.id, page.hasMore ? page.nextMaxId : '0');
-      if (!this.expandedReplyIds.includes(comment.id)) {
-        this.expandedReplyIds = this.expandedReplyIds.concat([comment.id]);
-      }
-      this.comments = this.comments.slice();
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.weibo_replies_no_progress') });
     } catch (error) {
       if (!this.isCurrentReplyRequest(epoch, revision, comment.id, threadEpoch)) { return; }
       this.getUIContext().getPromptAction().showToast({ message: (error as Error).message ?? '回复加载失败，请重试' });
@@ -2027,9 +2064,16 @@ export struct WeiboPostDetail {
         Button('重新加载评论').height(44).backgroundColor(Color.Transparent).fontColor(Theme.brand())
           .onClick((): void => { this.loadComments(true); }, WEIBO_TAP_MAX_MOVEMENT)
       } else if (this.comments.length === 0) {
-        Text($r('app.string.weibo_no_comments'))
+        Text(this.hasMoreComments ? $r('app.string.weibo_comments_empty_page') : $r('app.string.weibo_no_comments'))
           .fontSize(fs(13, this.fontScale))
           .fontColor(Theme.textSecondary(this.isDark))
+        if (this.loadingMoreComments) {
+          LoadingProgress().width(24).height(24)
+        } else if (this.hasMoreComments) {
+          Button($r('app.string.weibo_comments_load_more'))
+            .backgroundColor(Color.Transparent).fontColor(Theme.brand())
+            .onClick((): void => { this.loadMoreComments(); }, WEIBO_TAP_MAX_MOVEMENT)
+        }
       } else {
         ForEach(this.comments, (comment: WeiboComment): void => {
           Column({ space: Spacing.sm }) {

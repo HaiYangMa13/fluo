@@ -22,7 +22,6 @@ test('WeiboService formatFollowersCount formats count strings and numbers accura
     '../network/WeiboHttpClient': { WeiboHttpClient: {} },
     '../common/Constants': { formatWeiboTime: t => t, stripHtml: t => t },
     '../common/WeiboText': { normalizeWeiboText: t => t, midToBid: t => t, bidToMid: t => t },
-    '../common/WeiboMediaMetadata': { weiboLivePhotoTracks: () => null },
     './WeiboMedia': { prepareWeiboImage: async () => {}, WeiboUploadImage: {} },
     '@kit.RemoteCommunicationKit': { rcp: {} }
   });
@@ -82,7 +81,6 @@ test('WeiboService fetchPostLikes fetches mobile attitudes and extracts users', 
     },
     '../common/Constants': { formatWeiboTime: t => t, stripHtml: t => t },
     '../common/WeiboText': { normalizeWeiboText: t => t, midToBid: t => t, bidToMid: t => t },
-    '../common/WeiboMediaMetadata': { weiboLivePhotoTracks: () => null },
     './WeiboMedia': { prepareWeiboImage: async () => {}, WeiboUploadImage: {} },
     '@kit.RemoteCommunicationKit': { rcp: {} }
   });
@@ -135,7 +133,6 @@ test('WeiboService fetchPostLikes falls back to desktop likeList when mobile fai
     },
     '../common/Constants': { formatWeiboTime: t => t, stripHtml: t => t },
     '../common/WeiboText': { normalizeWeiboText: t => t, midToBid: t => t, bidToMid: t => t },
-    '../common/WeiboMediaMetadata': { weiboLivePhotoTracks: () => null },
     './WeiboMedia': { prepareWeiboImage: async () => {}, WeiboUploadImage: {} },
     '@kit.RemoteCommunicationKit': { rcp: {} }
   });
@@ -184,7 +181,6 @@ test('WeiboService fetchPostReposts fetches mobile repostTimeline and maps to po
     },
     '../common/Constants': { formatWeiboTime: t => t, stripHtml: t => t },
     '../common/WeiboText': { normalizeWeiboText: t => t, midToBid: t => t, bidToMid: t => t },
-    '../common/WeiboMediaMetadata': { weiboLivePhotoTracks: () => null },
     './WeiboMedia': { prepareWeiboImage: async () => {}, WeiboUploadImage: {} },
     '@kit.RemoteCommunicationKit': { rcp: {} }
   });

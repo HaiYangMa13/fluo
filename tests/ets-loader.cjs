@@ -7,6 +7,8 @@ const ts = require(process.env.WEIBO_TEST_TYPESCRIPT || path.join(sdk,
   'default/openharmony/ets/build-tools/ets-loader/bin/ark/build-win/legacy_api8/node_modules/typescript'));
 const root = path.resolve(__dirname, '../entry/src/main/ets');
 function createLoader(mocks = {}, globals = {}) {
+  // SDK logging has no observable domain behavior; keep the harness offline.
+  mocks = { '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {}, debug() {} } }, ...mocks };
   const cache = new Map();
   function load(name, parent = root) {
     if (Object.hasOwn(mocks, name)) return mocks[name];

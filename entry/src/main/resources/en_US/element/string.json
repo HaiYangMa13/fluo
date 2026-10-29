@@ -59,6 +59,19 @@
     { "name": "weibo_software_about_support_description", "value": "Development and maintenance take continued time and care. If this app helps you, voluntary support is welcome; thank you for using it either way." },
     { "name": "weibo_software_about_support_scan", "value": "Scan either QR code below with WeChat or Alipay to show your support." },
     { "name": "weibo_software_about_wechat", "value": "WeChat Pay" },
-    { "name": "weibo_software_about_alipay", "value": "Alipay" }
+    { "name": "weibo_software_about_alipay", "value": "Alipay" },
+    {"name":"live_photo_hold","value":"Hold to play Live Photo"},
+    {"name":"live_photo_loading","value":"Loading Live Photo…"},
+    {"name":"live_photo_playing","value":"Playing Live Photo"},
+    {"name":"live_photo_error_network","value":"Live Photo connection failed or timed out. Hold to retry."},
+    {"name":"live_photo_error_expired","value":"Live Photo link expired. Go back and refresh the post."},
+    {"name":"live_photo_error_format","value":"Live Photo format unsupported or file damaged. Showing the still image."},
+    {"name":"live_photo_error_access","value":"Live Photo access denied. Required headers or permission may be missing."},
+    {"name":"live_photo_error_unknown","value":"Live Photo failed for an undetermined reason. Hold to retry."},
+    {"name":"weibo_comments_no_progress","value":"No new comments yet. You can load more."},
+    {"name":"weibo_replies_no_progress","value":"No new replies yet. You can load more."},
+    {"name":"weibo_comments_empty_page","value":"No visible comments on this page."},
+    {"name":"weibo_comments_load_more","value":"Load more comments"},
+    {"name":"live_photo_error_timeout","value":"Live Photo loading timed out. Hold to retry."}
   ]
 }

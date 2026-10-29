@@ -119,10 +119,17 @@ export enum WeiboCommentSort {
   Latest = 1,
 }
 
+/** A reply cursor only has meaning on the endpoint that issued it. */
+export interface WeiboReplyContinuation {
+  source: 'mobile' | 'desktop';
+  maxIdType: string;
+}
+
 export interface WeiboCommentsPage {
   items: WeiboComment[];
   nextMaxId: string;
   hasMore: boolean;
+  replyContinuation?: WeiboReplyContinuation;
 }
 
 /** Search categories corresponding to Weibo mobile container types. */

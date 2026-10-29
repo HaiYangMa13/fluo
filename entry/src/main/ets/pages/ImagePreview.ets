@@ -26,6 +26,10 @@ import { FloorItem } from '../model/DataModel';
 import { Theme, Spacing, Radius, isDarkMode, MaterialManager, fs } from '../common/Theme';
 import { Haptic } from '../common/Haptic';
 import { writeWeiboImage } from '../common/WeiboImageWrite';
+import { normalizeMediaUrl } from '../common/MediaUrl';
+import { normalizeLivePhotoTracks } from '../common/WeiboMediaMetadata';
+import { LivePhotoErrorKind, LivePhotoFailure, LivePhotoStatus } from '../common/LivePhotoPlayback';
+import { WeiboLivePhotoPlayer } from '../components/WeiboLivePhotoPlayer';
 
 /**
  * 图片流式补页一次触发的最大请求页数：楼层页里可能有整页无图（纯文字楼层），
@@ -39,14 +43,7 @@ const MAX_STREAM_FETCH_PER_TRIGGER: number = 2;
 const MAX_STREAM_PAGES: number = 20;
 
 function sanitizePreviewUrl(url: string): string {
-  const trimmed = url.trim();
-  if (trimmed.startsWith('//')) {
-    return `https:${trimmed}`;
-  }
-  if (trimmed.startsWith('http://')) {
-    return `https://${trimmed.substring(7)}`;
-  }
-  return trimmed;
+  return normalizeMediaUrl(url);
 }
 
 @Entry
@@ -83,10 +80,19 @@ struct ImagePreview {
 
   onPageShow(): void {
     this.fontSizeTick++;
+    this.previewActive = true;
+  }
+
+  onPageHide(): void {
+    this.stopLivePhoto();
+    this.previewActive = false;
   }
   @State pictureVideos: Record<string, string> = {};
+  // Press intent is separate from the player's actual Loading/Playing/Failed state.
   @State livePlayingIndex: number = -1;
-  private liveController: VideoController = new VideoController();
+  @State liveStatus: LivePhotoStatus = LivePhotoStatus.Loading;
+  @State liveFailure: LivePhotoFailure | null = null;
+  @State previewActive: boolean = true;
   @State saving: boolean = false;
   @State showControls: boolean = true;
   @State viewportWidth: number = 360;
@@ -131,8 +137,8 @@ struct ImagePreview {
       this.currentIndex = Math.max(0, Math.min(Math.max(0, this.urls.length - 1), Math.floor(Number(params.index) || 0)));
     }
     const tracks: Object | undefined = params?.pictureVideos;
-    if (tracks !== undefined && typeof tracks === 'object' && !Array.isArray(tracks)) {
-      const candidates: Record<string, string> = tracks as Record<string, string>;
+    if (tracks !== undefined && tracks !== null && typeof tracks === 'object' && !Array.isArray(tracks)) {
+      const candidates: Record<string, string> = normalizeLivePhotoTracks(tracks as Record<string, string>);
       const valid: Record<string, string> = {};
       for (const url of this.urls) {
         const video: string = candidates[url] ?? '';
@@ -192,6 +198,7 @@ struct ImagePreview {
   }
 
   aboutToDisappear(): void {
+    this.previewActive = false;
     this.stopLivePhoto();
     this.restoreStatusBar();
   }
@@ -223,8 +230,21 @@ struct ImagePreview {
   }
 
   private stopLivePhoto(): void {
-    try { this.liveController.pause(); } catch (_error) {}
     this.livePlayingIndex = -1;
+  }
+
+  private liveStatusText(): Resource {
+    if (this.liveStatus === LivePhotoStatus.Playing) { return $r('app.string.live_photo_playing'); }
+    if (this.liveStatus === LivePhotoStatus.Loading) { return $r('app.string.live_photo_loading'); }
+    if (this.liveStatus !== LivePhotoStatus.Failed) { return $r('app.string.live_photo_hold'); }
+    switch (this.liveFailure?.kind) {
+      case LivePhotoErrorKind.Network: return $r('app.string.live_photo_error_network');
+      case LivePhotoErrorKind.Timeout: return $r('app.string.live_photo_error_timeout');
+      case LivePhotoErrorKind.Expired: return $r('app.string.live_photo_error_expired');
+      case LivePhotoErrorKind.Format: return $r('app.string.live_photo_error_format');
+      case LivePhotoErrorKind.Access: return $r('app.string.live_photo_error_access');
+      default: return $r('app.string.live_photo_error_unknown');
+    }
   }
 
   build() {
@@ -242,16 +262,27 @@ struct ImagePreview {
                 .scale({ x: this.getScale(idx), y: this.getScale(idx) })
                 .translate({ x: this.getPanX(idx), y: this.getPanY(idx) })
 
-              if (idx === this.currentIndex && this.livePlayingIndex === idx) {
-                Video({ src: this.pictureVideos[url], previewUri: url, controller: this.liveController })
-                  .width('100%').height('100%').controls(false).autoPlay(true).muted(true).loop(true)
-                  .objectFit(ImageFit.Contain).hitTestBehavior(HitTestMode.None)
+              if (this.previewActive && idx === this.currentIndex && (this.pictureVideos[url] ?? '').length > 0) {
+                WeiboLivePhotoPlayer({
+                  src: this.pictureVideos[url], poster: url, requested: this.livePlayingIndex === idx,
+                  onStatusChange: (status: LivePhotoStatus, failure: LivePhotoFailure | null): void => {
+                    if (idx !== this.currentIndex || !this.previewActive) { return; }
+                    this.liveStatus = status;
+                    this.liveFailure = failure;
+                  }
+                })
                   .scale({ x: this.getScale(idx), y: this.getScale(idx) })
                   .translate({ x: this.getPanX(idx), y: this.getPanY(idx) })
-                  .onError((): void => {
-                    this.stopLivePhoto();
-                    this.getUIContext().getPromptAction().showToast({ message: '实况视频加载失败，请检查网络后重试' });
-                  })
+                if ((this.livePlayingIndex === idx && this.liveStatus === LivePhotoStatus.Loading)
+                  || this.liveStatus === LivePhotoStatus.Failed) {
+                  Column({ space: 8 }) {
+                    if (this.liveStatus === LivePhotoStatus.Loading) { LoadingProgress().width(32).height(32).color(Color.White) }
+                    Text(this.liveStatusText()).fontSize(14).fontColor(Color.White).textAlign(TextAlign.Center)
+                    if (this.liveFailure !== null) { Text(`${this.liveFailure.code}`).fontSize(12).fontColor('#CCCCCC') }
+                  }
+                  .padding(16).backgroundColor('#B3000000').borderRadius(12)
+                  .hitTestBehavior(HitTestMode.None)
+                }
               }
 
               // 透明手势层：只切换手势集合，不触碰图片节点生命周期
@@ -329,6 +360,8 @@ struct ImagePreview {
         .onChange((index: number) => {
           this.stopLivePhoto();
           this.currentIndex = index;
+          this.liveStatus = LivePhotoStatus.Loading;
+          this.liveFailure = null;
           this.resetZoom();
           // 流式补页触发：距已加载图片末尾还剩 3 张时开始拉下一页，尽量让用户滑到头时新图已就位
           if (index >= this.urls.length - 3) {
@@ -360,7 +393,7 @@ struct ImagePreview {
 
             Blank()
             if ((this.pictureVideos[this.urls[this.currentIndex]] ?? '').length > 0) {
-              Text(this.livePlayingIndex === this.currentIndex ? '实况播放中' : '长按播放实况')
+              Text(this.liveStatusText())
                 .fontSize(fs(13, this.fontScale)).fontColor(Color.White)
                 .padding(8).backgroundColor('#99000000').borderRadius(16)
                 .hitTestBehavior(HitTestMode.None)
@@ -456,6 +489,8 @@ struct ImagePreview {
       return;
     }
     this.isClosing = true;
+    this.stopLivePhoto();
+    this.previewActive = false;
     this.restoreStatusBar();
     this.getUIContext().animateTo({ duration: 180, curve: Curve.EaseOut }, (): void => {
       this.previewOpacity = 0;

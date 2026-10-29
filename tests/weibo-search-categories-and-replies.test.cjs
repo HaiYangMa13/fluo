@@ -216,7 +216,7 @@ test('fetchCommentReplies falls back to desktop buildComments when mobile hotFlo
     throw new Error('unexpected url: ' + url);
   });
 
-  const page2 = await service.fetchCommentReplies('parent_comment_1', '4761565561881496');
+  const page2 = await service.fetchCommentReplies('parent_comment_1', '4761565561881496', page1.replyContinuation);
   assert.equal(page2.items.length, 1);
   assert.equal(page2.items[0].id, 'child_2');
   assert.equal(page2.items[0].text, '第二页回复来自桌面端接口');
@@ -228,8 +228,9 @@ test('fetchCommentReplies falls back to desktop buildComments when mobile hotFlo
   assert.equal(lastCall.method, 'getDesktop');
   assert.ok(lastCall.url.includes('id=parent_comment_1'));
   assert.ok(lastCall.url.includes('fetch_level=1'));
-  assert.ok(lastCall.url.includes('is_mix=1'));
-  assert.ok(lastCall.url.includes('max_id=4761565561881496'));
+  assert.ok(lastCall.url.includes('is_mix=0'));
+  assert.ok(lastCall.url.includes('max_id=0')); // provider switch starts with its own first page
+  assert.equal(page2.replyContinuation.source, 'desktop');
 });
 
 function searchResultHarness(service) {

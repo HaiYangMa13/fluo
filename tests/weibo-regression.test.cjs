@@ -507,7 +507,7 @@ function detailHarness(fetchComments, extraMethods = []) {
     Curve: { EaseOut: 0 }, ScrollState: { Scroll: 1, Fling: 2 } });
   Object.assign(instance, { postId: 'p', comments: [], commentsSort: 0, commentsEpoch: 0, commentsPage: 1,
     commentsNextMaxId: '0', commentsError: '', commentsNoProgressPages: 0, commentsLoading: false, loadingMoreComments: false, hasMoreComments: true,
-    replyLoadingIds: [], expandedReplyIds: [], replyCursors: new Map(), replyEpochs: new Map(), commentLikingIds: [],
+    replyLoadingIds: [], expandedReplyIds: [], replyCursors: new Map(), replyContinuations: new Map(), replyEpochs: new Map(), commentLikingIds: [],
     commentLikeMutations: new Map(), commentLikeVersion: 0,
     getUIContext: () => ({ getPromptAction: () => ({ showToast() {} }), animateTo: (_, action) => action() }) });
   return { instance, service, auth };
@@ -657,6 +657,31 @@ test('immersive top and bottom chrome stay transparent floating shells', () => {
     '列表在顶部时必须显示悬浮 Dock，否则只剩 bottomInset 预留的空白带');
 });
 
+test('manual comment loading crosses empty and duplicate pages and deduplicates one response', async () => {
+  const cursors = [], pages = [
+    { items: [], nextMaxId: 'c2', hasMore: true },
+    { items: [{ id: 'seen' }], nextMaxId: 'c3', hasMore: true },
+    { items: [{ id: 'new' }, { id: 'new' }], nextMaxId: 'c4', hasMore: true }
+  ];
+  const h = detailHarness(async (post, page, sort, cursor) => { cursors.push(cursor); return pages.shift(); });
+  h.instance.comments = [{ id: 'seen' }]; h.instance.commentsNextMaxId = 'c1';
+  await h.instance.loadMoreComments();
+  assert.deepEqual(cursors, ['c1', 'c2', 'c3']);
+  assert.deepEqual(Array.from(h.instance.comments, c => c.id), ['seen', 'new']);
+  assert.equal(h.instance.commentsNextMaxId, 'c4'); assert.equal(h.instance.loadingMoreComments, false);
+});
+test('failed comment scan preserves the last successful cursor and leaves manual retry enabled', async () => {
+  let count = 0; const h = detailHarness(async () => {
+    if (++count === 1) return { items: [], nextMaxId: 'next', hasMore: true };
+    throw new Error('network');
+  });
+  h.instance.comments = [{ id: 'seen' }]; h.instance.commentsNextMaxId = 'start';
+  await h.instance.loadMoreComments();
+  assert.equal(count, 2); assert.equal(h.instance.commentsNextMaxId, 'next');
+  assert.equal(h.instance.comments.length, 1); assert.equal(h.instance.hasMoreComments, true);
+  assert.equal(h.instance.loadingMoreComments, false);
+});
+
 test('duplicate-only comment page with advancing cursor does not claim all comments are loaded', async () => {
   const h = detailHarness(async () => ({ items: [{ id: 'same' }], nextMaxId: 'cursor-3', hasMore: true }));
   h.instance.comments = [{ id: 'same' }]; h.instance.commentsNextMaxId = 'cursor-2';
@@ -668,10 +693,10 @@ test('bounded duplicate-page automatic loading still allows manual continuation 
   h.instance.comments = [{ id: 'same' }]; h.instance.commentsNextMaxId = 'start';
   for (let i = 0; i < 5; i++) await h.instance.loadMoreComments(true);
   assert.equal(requests, 3); assert.equal(h.instance.hasMoreComments, true);
-  await h.instance.loadMoreComments(); assert.equal(requests, 4);
+  await h.instance.loadMoreComments(); assert.equal(requests, 6); // manual tap skips up to three pages
   h.service.fetchComments = async () => { requests++; return { items: [{ id: 'new' }], nextMaxId: `cursor-${requests}`, hasMore: true }; };
   await h.instance.loadMoreComments(); assert.equal(h.instance.comments.length, 2);
-  await h.instance.loadMoreComments(true); assert.equal(requests, 6);
+  await h.instance.loadMoreComments(true); assert.equal(requests, 8);
 });
 test('successful in-flight like reconciles current same-ID row after sort switching and invalidates cache', async () => {
   const h = detailHarness(async () => ({ items: [], nextMaxId: '0', hasMore: false }), ['toggleCommentLike']);

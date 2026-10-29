@@ -1,29 +1,17 @@
 import { formatWeiboTime, stripHtml } from '../common/Constants';
 import { normalizeWeiboText, midToBid, bidToMid } from '../common/WeiboText';
-import { weiboLivePhotoTracks } from '../common/WeiboMediaMetadata';
+import { weiboLivePhotoTracks, weiboMixedPictures, weiboPictureUrl, WeiboMediaPicture, WeiboMediaSize, WeiboMixedMediaInfo } from '../common/WeiboMediaMetadata';
+import { firstMediaUrl, normalizeMediaUrl } from '../common/MediaUrl';
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { WeiboHttpClient } from '../network/WeiboHttpClient';
-import { WeiboComment, WeiboCommentSort, WeiboCommentsPage, WeiboDetailTab, WeiboHotTopic, WeiboLikeUser, WeiboLikesPage, WeiboNotification, WeiboPost, WeiboRepostsPage, WeiboSearchCompositeResult, WeiboSearchSuggestionBundle, WeiboSearchType, WeiboSuggestion, WeiboTimelinePage, WeiboUser } from '../model/WeiboModel';
+import { WeiboComment, WeiboCommentSort, WeiboCommentsPage, WeiboDetailTab, WeiboHotTopic, WeiboLikeUser, WeiboLikesPage, WeiboNotification, WeiboPost, WeiboReplyContinuation, WeiboRepostsPage, WeiboSearchCompositeResult, WeiboSearchSuggestionBundle, WeiboSearchType, WeiboSuggestion, WeiboTimelinePage, WeiboUser } from '../model/WeiboModel';
 import { WeiboAuthManager } from './WeiboAuthManager';
 import { WeiboVisitorSession } from './WeiboVisitorSession';
 import { prepareWeiboImage, WeiboUploadImage } from './WeiboMedia';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
 export function sanitizeHttpsUrl(url: string | undefined | null): string {
-  if (url === undefined || url === null) {
-    return '';
-  }
-  const trimmed: string = url.trim();
-  if (trimmed.length === 0) {
-    return '';
-  }
-  if (trimmed.startsWith('//')) {
-    return `https:${trimmed}`;
-  }
-  if (trimmed.startsWith('http://')) {
-    return `https://${trimmed.substring(7)}`;
-  }
-  return trimmed;
+  return normalizeMediaUrl(url);
 }
 
 interface WeiboUploadResponse {
@@ -121,34 +109,12 @@ interface WeiboUserJson {
   following?: boolean;
 }
 
-interface WeiboPictureJson {
-  type?: string;
-  videoSrc?: string;
-  video?: string;
-  url?: string;
-  large?: WeiboPictureSizeJson;
-  largest?: WeiboPictureSizeJson;
-  mw2000?: WeiboPictureSizeJson;
-  original?: WeiboPictureSizeJson;
-}
+interface WeiboPictureJson extends WeiboMediaPicture {}
 
-interface WeiboPictureSizeJson {
-  url?: string;
-}
+interface WeiboPictureSizeJson extends WeiboMediaSize {}
 
-/** Desktop surfaces return one of these per picture inside the `pic_infos` map. */
-interface WeiboPictureInfoJson {
-  type?: string;
-  video?: string;
-  videoSrc?: string;
-  thumbnail?: WeiboPictureSizeJson;
-  bmiddle?: WeiboPictureSizeJson;
-  large?: WeiboPictureSizeJson;
-  original?: WeiboPictureSizeJson;
-  largest?: WeiboPictureSizeJson;
-  mw2000?: WeiboPictureSizeJson;
-  largecover?: WeiboPictureSizeJson;
-}
+/** Explicit inheritance keeps ArkTS nominal typing aligned with shared media parsing. */
+interface WeiboPictureInfoJson extends WeiboMediaPicture {}
 
 /** The video URL variants used by the mobile status API. */
 interface WeiboVideoUrlsJson {
@@ -245,6 +211,7 @@ interface WeiboPostJson {
   /** Desktop surfaces ship ordered ids plus a `pic_infos` map and no `pics`. */
   pic_ids?: string[];
   pic_infos?: Record<string, WeiboPictureInfoJson>;
+  mix_media_info?: WeiboMixedMediaInfo;
   page_info?: WeiboPageInfoJson;
   video_url?: string;
   url_struct?: WeiboUrlStructJson[];
@@ -263,6 +230,7 @@ interface WeiboRepliesResponse {
   msg?: string;
   data?: WeiboCommentJson[];
   max_id?: string | number;
+  max_id_type?: string | number;
 }
 
 interface WeiboCommentJson {
@@ -918,7 +886,8 @@ export class WeiboService {
     }
   }
 
-  async fetchCommentReplies(commentId: string, maxId: string = '0'): Promise<WeiboCommentsPage> {
+  async fetchCommentReplies(commentId: string, maxId: string = '0', continuation?: WeiboReplyContinuation,
+    postId: string = ''): Promise<WeiboCommentsPage> {
     const cid: string = commentId.trim();
     if (cid.length === 0) {
       return { items: [], nextMaxId: '0', hasMore: false };
@@ -927,51 +896,41 @@ export class WeiboService {
     const revision: number = auth.getSessionRevision();
     const cookie: string = auth.getCookie() || WeiboVisitorSession.getInstance().getCookie();
 
-    // 1. Try mobile hotFlowChild with Referer
-    try {
-      const raw: string = await WeiboHttpClient.get(
-        `https://m.weibo.cn/comments/hotFlowChild?cid=${encodeURIComponent(cid)}&max_id=${encodeURIComponent(maxId)}&max_id_type=0`,
-        cookie,
-        `https://m.weibo.cn/detail/${encodeURIComponent(cid)}`
-      );
-      auth.assertSession(revision);
-      const trimmed: string = raw.trim();
-      if (!trimmed.startsWith('<!DOCTYPE') && !trimmed.startsWith('<html') && !trimmed.includes('passport.weibo.com')) {
+    // Never feed a desktop cursor to hotFlowChild. Mobile pagination also needs max_id_type.
+    if (continuation?.source !== 'desktop') {
+      try {
+        const raw: string = await WeiboHttpClient.get(
+          `https://m.weibo.cn/comments/hotFlowChild?cid=${encodeURIComponent(cid)}&max_id=${encodeURIComponent(maxId)}`
+            + `&max_id_type=${encodeURIComponent(continuation?.maxIdType ?? '0')}`,
+          cookie, postId.length > 0 ? `https://m.weibo.cn/detail/${encodeURIComponent(postId)}` : 'https://m.weibo.cn/'
+        );
+        auth.assertSession(revision);
         const response: WeiboRepliesResponse = this.parseCommentResponse(raw);
         if (response.ok === 1 && Array.isArray(response.data)) {
-          const items: WeiboComment[] = [];
-          for (const source of response.data) {
-            items.push(this.toComment(source));
-          }
-          const cursor: string = `${response.max_id ?? '0'}`;
-          return { items: items, nextMaxId: cursor, hasMore: cursor !== '0' && cursor !== maxId && items.length > 0 };
+          const maxIdType: string = `${response.max_id_type ?? continuation?.maxIdType ?? '0'}`;
+          const page: WeiboCommentsPage = this.commentPage(response, maxId, maxIdType !== (continuation?.maxIdType ?? '0'));
+          if (!/^\d+$/.test(maxIdType)) { throw new Error('回复分页类型无效，请重试'); }
+          page.replyContinuation = { source: 'mobile', maxIdType: maxIdType };
+          return page;
         }
+      } catch (_mobileError) {
+        // Session changes must escape; never fall back using a captured old-account Cookie.
+        auth.assertSession(revision);
       }
-    } catch (_mobileError) {
-      // Fall through to desktop endpoint
     }
-
-    // 2. Desktop fallback (ajax/statuses/buildComments with fetch_level=1)
-    const isFirstPage: boolean = maxId === '0' || maxId.length === 0;
+    auth.assertSession(revision);
+    // Switching providers must restart at zero. The view merges/deduplicates this first page.
+    const desktopCursor: string = continuation?.source === 'desktop' ? maxId : '0';
+    const isFirstPage: boolean = desktopCursor === '0' || desktopCursor.length === 0;
     const desktopUrl: string = `https://weibo.com/ajax/statuses/buildComments?id=${encodeURIComponent(cid)}`
-      + `&is_reload=1&is_show_bulletin=2&is_mix=${isFirstPage ? 0 : 1}&fetch_level=1&max_id=${encodeURIComponent(maxId)}&count=20`;
+      + `&is_reload=1&is_show_bulletin=2&is_mix=${isFirstPage ? 0 : 1}&fetch_level=1&max_id=${encodeURIComponent(desktopCursor)}&count=20`;
     const desktopRaw: string = await WeiboHttpClient.getDesktop(desktopUrl, cookie);
     auth.assertSession(revision);
     this.parseResponse(desktopRaw);
     const desktopResponse: WeiboRepliesResponse = this.parseCommentResponse(desktopRaw);
-    if (!Array.isArray(desktopResponse.data)) {
-      throw new Error(desktopResponse.msg ?? '回复加载失败');
-    }
-    const desktopItems: WeiboComment[] = [];
-    for (const source of desktopResponse.data) {
-      desktopItems.push(this.toComment(source));
-    }
-    const nextCursor: string = `${desktopResponse.max_id ?? '0'}`;
-    return {
-      items: desktopItems,
-      nextMaxId: nextCursor,
-      hasMore: desktopItems.length > 0 && nextCursor !== '0' && nextCursor !== maxId
-    };
+    const page: WeiboCommentsPage = this.commentPage(desktopResponse, desktopCursor);
+    page.replyContinuation = { source: 'desktop', maxIdType: '0' };
+    return page;
   }
 
   async fetchComments(postId: string, page: number, sort: WeiboCommentSort = WeiboCommentSort.Hot,
@@ -1033,6 +992,22 @@ export class WeiboService {
     return JSON.parse(exact) as WeiboRepliesResponse;
   }
 
+  private commentPage(response: WeiboRepliesResponse, requestedCursor: string, typeAdvanced: boolean = false): WeiboCommentsPage {
+    if (!Array.isArray(response.data)) { throw new Error(response.msg ?? '微博返回了无法解析的评论列表'); }
+    if (response.max_id !== undefined && response.max_id !== null
+      && typeof response.max_id !== 'string' && typeof response.max_id !== 'number') {
+      throw new Error('评论分页游标无效，请重试');
+    }
+    const nextMaxId: string = `${response.max_id ?? '0'}`.trim();
+    if (nextMaxId.length === 0 || (nextMaxId !== '0' && nextMaxId === requestedCursor && !typeAdvanced)) {
+      throw new Error('评论分页游标未推进，未取得下一页，请重试');
+    }
+    const items: WeiboComment[] = [];
+    for (const source of response.data) { items.push(this.toComment(source)); }
+    // Empty/filtered pages can still lead to a later visible page.
+    return { items: items, nextMaxId: nextMaxId, hasMore: nextMaxId !== '0' };
+  }
+
   private async fetchCommentsPage(postId: string, sort: WeiboCommentSort, maxId: string): Promise<WeiboCommentsPage> {
     const auth: WeiboAuthManager = WeiboAuthManager.getInstance();
     const revision: number = auth.getSessionRevision();
@@ -1044,11 +1019,7 @@ export class WeiboService {
     auth.assertSession(revision);
     this.parseResponse(raw);
     const response: WeiboRepliesResponse = this.parseCommentResponse(raw);
-    if (!Array.isArray(response.data)) { throw new Error('微博返回了无法解析的评论列表'); }
-    const items: WeiboComment[] = [];
-    for (const source of response.data) { items.push(this.toComment(source)); }
-    const nextMaxId: string = `${response.max_id ?? '0'}`;
-    return { items: items, nextMaxId: nextMaxId, hasMore: items.length > 0 && nextMaxId !== '0' && nextMaxId !== maxId };
+    return this.commentPage(response, maxId);
   }
 
   formatFollowersCount(count: string | number | undefined): string {
@@ -1575,17 +1546,15 @@ export class WeiboService {
   private pictureUrls(source: WeiboPostJson): string[] {
     const pictures: string[] = [];
     const seen: Record<string, boolean> = {};
-    const pictureSource: WeiboPictureJson[] = source.pics ?? [];
-    for (let index: number = 0; index < pictureSource.length; index++) {
-      const picture: WeiboPictureJson = pictureSource[index];
-      // The mobile endpoint normally returns the original file in `original`.
-      // Keep high-quality fallbacks for cards whose original field is omitted.
-      this.pushPictureUrl(pictures, seen, picture.original?.url
-        ?? picture.largest?.url
-        ?? picture.mw2000?.url
-        ?? picture.large?.url
-        ?? picture.url
-        ?? '');
+    // Mixed-media order is authoritative; video covers must not become stills.
+    for (const picture of weiboMixedPictures(source.mix_media_info)) {
+      this.pushPictureUrl(pictures, seen, weiboPictureUrl(picture));
+    }
+    if (pictures.length === 0) {
+      for (const picture of source.pics ?? []) {
+        if (picture.type === 'video') { continue; }
+        this.pushPictureUrl(pictures, seen, weiboPictureUrl(picture));
+      }
     }
     if (pictures.length === 0) {
       const infos: Record<string, WeiboPictureInfoJson> | undefined = source.pic_infos;
@@ -1597,14 +1566,7 @@ export class WeiboService {
           if (info === undefined) {
             continue;
           }
-          this.pushPictureUrl(pictures, seen, info.original?.url
-            ?? info.largest?.url
-            ?? info.mw2000?.url
-            ?? info.large?.url
-            ?? info.largecover?.url
-            ?? info.bmiddle?.url
-            ?? info.thumbnail?.url
-            ?? '');
+          this.pushPictureUrl(pictures, seen, weiboPictureUrl(info));
         }
       }
     }
@@ -1612,7 +1574,7 @@ export class WeiboService {
       // Legacy picture fields predate `pic_ids`. `thumbnail_pic` is left out on
       // purpose: it doubles as the video cover, and using it here would turn a
       // video post into a still picture card.
-      this.pushPictureUrl(pictures, seen, source.original_pic ?? source.bmiddle_pic ?? '');
+      this.pushPictureUrl(pictures, seen, firstMediaUrl([source.original_pic, source.bmiddle_pic]));
     }
     return pictures;
   }
@@ -1816,7 +1778,7 @@ export class WeiboService {
       text: this.postText(source),
       isLongText: this.isLongPost(source),
       pictures: pictures,
-      pictureVideos: weiboLivePhotoTracks(source.pics ?? [], source.pic_infos),
+      pictureVideos: weiboLivePhotoTracks(source.pics ?? [], source.pic_infos, source.mix_media_info),
       videoUrl: videoUrl,
       videoCoverUrl: videoCoverUrl,
       videoAspectRatio: width > 0 && height > 0 ? width / height : 16 / 9,

@@ -435,6 +435,19 @@
     {
       "name": "weibo_software_about_alipay",
       "value": "支付宝"
-    }
+    },
+    {"name":"live_photo_hold","value":"长按播放实况"},
+    {"name":"live_photo_loading","value":"实况加载中…"},
+    {"name":"live_photo_playing","value":"实况播放中"},
+    {"name":"live_photo_error_network","value":"实况网络连接失败或超时，长按重试"},
+    {"name":"live_photo_error_expired","value":"实况地址已过期，请返回刷新微博"},
+    {"name":"live_photo_error_format","value":"实况格式不支持或文件损坏，当前仅显示照片"},
+    {"name":"live_photo_error_access","value":"实况访问被拒绝，可能缺少请求头或访问权限"},
+    {"name":"live_photo_error_unknown","value":"实况加载失败，原因未确定；长按重试"},
+    {"name":"weibo_comments_no_progress","value":"暂未取得新评论，可继续加载"},
+    {"name":"weibo_replies_no_progress","value":"暂未取得新回复，可继续加载"},
+    {"name":"weibo_comments_empty_page","value":"本页暂无可显示的评论"},
+    {"name":"weibo_comments_load_more","value":"加载更多评论"},
+    {"name":"live_photo_error_timeout","value":"实况加载超时，长按重试"}
   ]
 }
